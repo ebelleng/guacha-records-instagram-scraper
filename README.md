@@ -1,30 +1,38 @@
 # Instagram Followers — OCI Function
 
-Función que abre `instagram.com/solamentedeya.m` con Chromium headless
-(Playwright) e intercepta la llamada de red interna `web_profile_info`
-(`api/v1/users/web_profile_info/?username=solamentedeya.m`) que Instagram
-dispara al cargar el perfil, de la cual se extrae
-`data.user.edge_followed_by.count`. Igual que en el scraper de Spotify, ese
-número no está en el HTML servido de entrada (SEO/meta tags), sino que llega
-vía una llamada propia del front — por eso hace falta un browser real y no
-un simple `fetch`.
+Función que pega directo al endpoint JSON interno de Instagram
+`web_profile_info` (`api/v1/users/web_profile_info/?username=solamentedeya.m`)
+mandando el header público `x-ig-app-id` que el propio front de Instagram usa
+en esa llamada, y extrae `data.user.edge_followed_by.count`. Sin browser: un
+`GET` HTTP normal con `requests`.
 
-Este repo es una réplica **independiente** del de
-[`guacha-records-spotify-scraper`](../guacha-records-spotify-scraper):
-misma arquitectura (Fn Project / OCI Functions + Playwright), pero su propia
-Application de OCI Functions, su propio repo/deploy de GitHub Actions y su
-propio path en el registry (`guacha-instagram-scraper`). La idea es que si
-uno de los dos scrapers falla (bloqueo del sitio, cambio de markup, límite
-de tamaño de imagen, etc.) no tumbe al otro — antes compartían flujo/pestañas
-y una falla arrastraba a la otra.
+**Por qué no usa Playwright/Chromium (a diferencia de Spotify):** la primera
+versión de este scraper replicaba el enfoque de
+[`guacha-records-spotify-scraper`](../guacha-records-spotify-scraper) —
+Chromium headless interceptando la respuesta de red. Anduvo bien en local,
+pero desplegado en OCI Functions Chromium se caía consistentemente (`502
+function failed`, sin excepción de Python — el contenedor moría antes de que
+nuestro propio `try/except` pudiera loguear nada) incluso subiendo la memoria
+a 2048MB y bloqueando imágenes/fuentes. Todo indica que Instagram es mucho
+más agresivo que Spotify detectando/bloqueando Chromium headless desde IPs de
+datacenter. Como el dato que necesitamos (seguidores) sale del mismo endpoint
+JSON que Chromium terminaba disparando de todas formas, pegarle directo por
+HTTP evita el problema de raíz y de paso deja la imagen Docker mucho más
+liviana (sin Chromium ni sus ~100 paquetes de sistema).
 
-⚠️ **Sin probar en un tenancy real.** Igual que el de Spotify, esto está
-armado en base a la documentación de Fn Project / OCI Functions sin poder
-desplegarlo ni ejecutarlo desde acá. Instagram además es bastante más
-agresivo que Spotify bloqueando tráfico de datacenters/IPs de nube y puede
-pedir login para ciertas requests — si `followers` sale `null` de forma
-consistente, puede que haga falta agregar cookies de sesión o un proxy
-residencial.
+Este repo es independiente del de
+[`guacha-records-spotify-scraper`](../guacha-records-spotify-scraper): su
+propia Application de OCI Functions, su propio repo/deploy de GitHub Actions
+y su propio path en el registry (`guacha-instagram-scraper`). La idea es que
+si uno de los dos scrapers falla no tumbe al otro — antes compartían
+flujo/pestañas y una falla arrastraba a la otra.
+
+⚠️ **Riesgo conocido:** este endpoint es interno/no documentado — Instagram
+puede cambiarlo o empezar a exigir headers adicionales (cookies de sesión,
+u otro `x-ig-app-id`) en cualquier momento. Si `followers` empieza a salir
+`null`/error de forma consistente, revisá primero si el endpoint sigue
+respondiendo igual con una request manual (`curl` con los mismos headers)
+antes de asumir que hay que volver a un browser real.
 
 ## 1. Prerequisitos
 - CLI de Fn Project instalado y configurado contra tu tenancy OCI
@@ -42,13 +50,7 @@ Desde esta carpeta:
 fn -v deploy --app instagram-scraper
 ```
 Esto hace el build de la imagen (Docker), la sube a OCIR, y crea/actualiza
-la función. La primera build va a tardar varios minutos por el
-`playwright install --with-deps chromium`.
-
-**Riesgo conocido:** OCI Functions tiene un límite sobre el tamaño total
-descomprimido de las imágenes de una Application. Una imagen con Chromium
-puede rondar 500MB-1GB — por eso esta función vive en su propia Application,
-separada de la de Spotify.
+la función. Al no llevar Chromium, la imagen es chica y el build es rápido.
 
 ## 3. Probar directo (sin API Gateway todavía)
 ```bash
@@ -59,9 +61,8 @@ Debería devolver algo como:
 {"profile_username": "solamentedeya.m", "followers": 1234, "ok": true}
 ```
 Si `followers` sale `null`, revisa los logs (`fn logs` o el log de la
-Application en la consola OCI) — puede ser que Instagram haya pedido login,
-que el `username` en la URL de `web_profile_info` no matchee a tiempo, o que
-haya cambiado el endpoint interno.
+Application en la consola OCI) — probablemente Instagram cambió el endpoint
+o los headers que exige.
 
 ## 4. Exponerla como endpoint HTTPS (para que n8n la llame)
 Igual que con el scraper de Spotify, hace falta **API Gateway** adelante de

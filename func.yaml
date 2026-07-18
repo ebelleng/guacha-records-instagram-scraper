@@ -5,5 +5,5 @@ runtime: docker
 build_image: fnproject/python:3.11-dev
 run_image: fnproject/python:3.11
 entrypoint: /python/bin/fdk /function/func.py handler
-memory: 2048
-timeout: 60
+memory: 256
+timeout: 30

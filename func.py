@@ -1,75 +1,51 @@
-import asyncio
 import io
 import json
 import logging
 
+import requests
 from fdk import response
-from playwright.async_api import async_playwright
 
-PROFILE_URL = "https://www.instagram.com/solamentedeya.m/"
 PROFILE_USERNAME = "solamentedeya.m"
+WEB_PROFILE_INFO_URL = "https://www.instagram.com/api/v1/users/web_profile_info/"
+# App id público que el propio front de Instagram manda en esta llamada;
+# no es un secreto, es fijo para cualquier cliente web logueado o no.
+IG_APP_ID = "936619743392459"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-async def get_followers() -> int | None:
-    """Abre la página pública del perfil e intercepta la respuesta de
-    `web_profile_info` (api/v1/users/web_profile_info/?username=...), la
-    llamada interna que Instagram dispara al cargar el perfil y trae
-    data.user.edge_followed_by.count. Igual que en Spotify, ese número no
-    vive en el HTML servido de entrada sino que llega vía una llamada de
-    red propia del front, así que hace falta un browser real para
-    disparerla y poder leer la respuesta."""
-    followers = None
-
-    async def on_response(resp):
-        nonlocal followers
-        if followers is not None or "web_profile_info" not in resp.url:
-            return
-        if PROFILE_USERNAME not in resp.url:
-            return
-        try:
-            body = await resp.json()
-            followers = body["data"]["user"]["edge_followed_by"]["count"]
-        except (KeyError, TypeError, ValueError):
-            pass
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
-        )
-        try:
-            page = await browser.new_page(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0 Safari/537.36"
-                )
-            )
-            # Instagram carga muchas más imágenes/fuentes/video que la página
-            # de Spotify; bloquear esos recursos reduce bastante el consumo
-            # de memoria de Chromium dentro del container (evita OOM-kill) y
-            # no afecta la llamada JSON que estamos interceptando.
-            await page.route(
-                "**/*",
-                lambda route: route.abort()
-                if route.request.resource_type in ("image", "media", "font")
-                else route.continue_(),
-            )
-            page.on("response", lambda resp: asyncio.ensure_future(on_response(resp)))
-            await page.goto(PROFILE_URL, wait_until="networkidle", timeout=25000)
-            if followers is None:
-                await page.wait_for_timeout(3000)
-        finally:
-            await browser.close()
-
-    return followers
+def get_followers() -> int | None:
+    """Pega directo al endpoint JSON interno que el propio front de
+    Instagram llama al cargar un perfil público (`web_profile_info`), sin
+    necesidad de un browser: alcanza con mandar el header `x-ig-app-id`
+    que ese request usa. Se probó primero con Playwright (mismo enfoque que
+    Spotify), pero Chromium se caía consistentemente dentro de OCI
+    Functions -- Instagram es bastante más agresivo detectando/bloqueando
+    Chromium headless desde IPs de datacenter que Spotify. Pegarle directo
+    a la API evita ese problema por completo."""
+    resp = requests.get(
+        WEB_PROFILE_INFO_URL,
+        params={"username": PROFILE_USERNAME},
+        headers={
+            "x-ig-app-id": IG_APP_ID,
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0 Safari/537.36"
+            ),
+            "Accept": "*/*",
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+    body = resp.json()
+    return body["data"]["user"]["edge_followed_by"]["count"]
 
 
-async def handler(ctx, data: io.BytesIO = None):
+def handler(ctx, data: io.BytesIO = None):
     try:
-        followers = await get_followers()
+        followers = get_followers()
         body = {
             "profile_username": PROFILE_USERNAME,
             "followers": followers,
