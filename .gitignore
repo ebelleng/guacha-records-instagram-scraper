@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Fn Project
+.func/
+
+# OCI / credentials (nunca deberían vivir en este repo)
+*.pem
+.oci/
+
+# Editor / OS
+.vscode/
+.DS_Store

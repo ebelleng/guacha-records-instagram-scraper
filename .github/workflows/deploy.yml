@@ -1,0 +1,51 @@
+name: Deploy to OCI Functions (prod)
+
+on:
+  push:
+    branches: [main]
+
+env:
+  OCI_REGION: us-phoenix-1
+  OCI_NAMESPACE: axs8ck13yuke
+  FN_APP: instagram-scraper
+  REGISTRY: phx.ocir.io
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure OCI CLI config
+        run: |
+          mkdir -p ~/.oci
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=${{ secrets.OCI_CLI_USER }}
+          fingerprint=${{ secrets.OCI_CLI_FINGERPRINT }}
+          tenancy=${{ secrets.OCI_CLI_TENANCY }}
+          region=${{ env.OCI_REGION }}
+          key_file=~/.oci/key.pem
+          EOF
+          printf '%s' "${{ secrets.OCI_CLI_KEY_CONTENT }}" > ~/.oci/key.pem
+          chmod 600 ~/.oci/config ~/.oci/key.pem
+
+      - name: Install fn CLI
+        run: curl -LSs https://raw.githubusercontent.com/fnproject/cli/master/install | sh
+
+      - name: Configure fn context
+        run: |
+          fn create context prod --provider oracle
+          fn use context prod
+          fn update context oracle.compartment-id ${{ secrets.OCI_CLI_TENANCY }}
+          fn update context api-url https://functions.${{ env.OCI_REGION }}.oci.oraclecloud.com
+          fn update context registry ${{ env.REGISTRY }}/${{ env.OCI_NAMESPACE }}/guacha-instagram-scraper
+
+      - name: Login to OCIR
+        run: |
+          echo "${{ secrets.OCIR_AUTH_TOKEN }}" | docker login ${{ env.REGISTRY }} \
+            -u "${{ env.OCI_NAMESPACE }}/${{ secrets.OCI_USERNAME }}" --password-stdin
+
+      - name: Deploy function
+        run: fn -v deploy --app ${{ env.FN_APP }}
