@@ -47,6 +47,16 @@ async def get_followers() -> int | None:
                     "Chrome/124.0 Safari/537.36"
                 )
             )
+            # Instagram carga muchas más imágenes/fuentes/video que la página
+            # de Spotify; bloquear esos recursos reduce bastante el consumo
+            # de memoria de Chromium dentro del container (evita OOM-kill) y
+            # no afecta la llamada JSON que estamos interceptando.
+            await page.route(
+                "**/*",
+                lambda route: route.abort()
+                if route.request.resource_type in ("image", "media", "font")
+                else route.continue_(),
+            )
             page.on("response", lambda resp: asyncio.ensure_future(on_response(resp)))
             await page.goto(PROFILE_URL, wait_until="networkidle", timeout=25000)
             if followers is None:
